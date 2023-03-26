@@ -1,0 +1,98 @@
+#include <stdint.h>
+#include <stdio.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+/*    [bits 32]
+    push 3
+    pop eax
+    shl eax, 4
+    add al, 3
+    push eax
+    push _next_x64_recipe
+    retf
+*/
+#define BOOTSTRAP                                                              \
+  0x6a, 0x03, 0x58, 0xc1, 0xe0, 0x04, 0x04, 0x03, 0x50, 0x68, 0x98, 0x5f,      \
+      0x3f, 0x12, 0xcb
+#define BOOTSTRAP_SZ 0xF
+/*    [bits 64]
+    push 0x23
+    push _next_x86_recipe
+    retfq
+*/
+#define UNBOOTSTRAP 0x6A, 0x23, 0x68, 0x90, 0x61, 0x2F, 0x12, 0x48, 0xCB
+#define UNBOOTSTRAP_SZ 9
+
+#define ENCKEY                                                                 \
+  0xca, 0xe2, 0x0d, 0x53, 0xd4, 0xe4, 0x19, 0x87, 0xe4, 0xe8, 0x09, 0x89,      \
+      0xdc, 0xe4, 0x2f, 0x51, 0xd0, 0x12, 0xc1, 0x51, 0xe8, 0xe4, 0xcf, 0x43,  \
+      0x1e, 0x1e, 0x1b, 0x85, 0xc6, 0x04, 0xcf, 0x8d, 0x1a, 0xc0, 0x19, 0x51,  \
+      0xf2, 0x12, 0x23, 0x63, 0xee, 0x52, 0x3f, 0x45, 0xd4, 0x50, 0x69
+#define ENCKEY_SZ 0x2f
+
+// Copy output code from as.py to here
+// And change size as well as write location accordingly
+
+#define CHECKER                                                                \
+  0xb8, 0xca, 0x5d, 0xa9, 0x30, 0x83, 0xe8, 0x2f, 0x85, 0xc0, 0x75, 0x51,      \
+      0x49, 0xb8, 0xb2, 0x0d, 0x39, 0xa5, 0x94, 0x39, 0xc7, 0x22, 0x49, 0xb9,  \
+      0x8f, 0x7f, 0x22, 0x51, 0x90, 0xba, 0xdd, 0x17, 0x31, 0xf6, 0x48, 0x8d,  \
+      0x56, 0x3c, 0x48, 0x8d, 0x4e, 0x41, 0x4c, 0x8d, 0x96, 0xd3, 0x00, 0x00,  \
+      0x00, 0x4c, 0x8d, 0x9e, 0xf7, 0x00, 0x00, 0x00, 0x48, 0x83, 0xfe, 0x2f,  \
+      0x73, 0x1f, 0x41, 0x8a, 0x04, 0x31, 0xd0, 0xc8, 0x41, 0x32, 0x04, 0x30,  \
+      0x30, 0xd0, 0x84, 0xc0, 0x87, 0xca, 0x44, 0x87, 0xd1, 0x45, 0x87, 0xda,  \
+      0x75, 0x07, 0x48, 0x8d, 0x74, 0x30, 0x01, 0xeb, 0xdb, 0x48, 0xba, 0x08,  \
+      0x99, 0x90, 0x3a, 0xcf, 0x25, 0x33, 0x2e, 0x48, 0x89, 0x02
+#define CHECKER_SZ 0x6a
+
+inline int secret(uint32_t src, uint32_t size) noexcept {
+  // ret value
+  uint64_t ax = -1;
+  static uint8_t recipe[] = {BOOTSTRAP, ENCKEY, CHECKER, UNBOOTSTRAP, 0xC3};
+  static uint32_t ptr = NULL;
+  if (!ptr) {
+    ptr = (uint32_t)VirtualAlloc(NULL, sizeof(recipe), MEM_COMMIT | MEM_RESERVE,
+                                 PAGE_EXECUTE_READWRITE);
+    memcpy((PBYTE)ptr, recipe, sizeof(recipe));
+  }
+  // Setting Checker as return location for Bootstrap
+  *(uint32_t *)(ptr + 10) = ptr + BOOTSTRAP_SZ + ENCKEY_SZ;
+
+  // Setting size as size input
+  *(uint32_t *)(ptr + BOOTSTRAP_SZ + ENCKEY_SZ + 1) = size;
+  // Setting src as buf input
+  *(uint64_t *)(ptr + BOOTSTRAP_SZ + ENCKEY_SZ + 14) = (uint64_t)src;
+  // Setting enckey as hash input
+  *(uint64_t *)(ptr + BOOTSTRAP_SZ + ENCKEY_SZ + 24) =
+      (uint64_t)(ptr + BOOTSTRAP_SZ);
+  // Setting ax as output
+  *(uint64_t *)(ptr + BOOTSTRAP_SZ + ENCKEY_SZ + 95) = (uint64_t)&ax;
+
+  // Setting ret as return location of Unbootstrap, after Checker
+  *(uint32_t *)(ptr + BOOTSTRAP_SZ + ENCKEY_SZ + CHECKER_SZ + 3) =
+      ptr + BOOTSTRAP_SZ + ENCKEY_SZ + CHECKER_SZ + UNBOOTSTRAP_SZ;
+  ((void (*)())ptr)();
+
+  if (ptr) {
+    VirtualFree((LPVOID)ptr, 0, MEM_RELEASE);
+  }
+  return ax;
+}
+
+int main() {
+  char buf[0x50] = {0};
+  fgets(buf, 0x50, stdin);
+  buf[0x4F] = '\0';
+  auto const length = strlen(buf);
+  constexpr char HEADER[] = "UMASS{";
+  constexpr auto HEADER_SIZE = sizeof(HEADER) - 1;
+  auto const cmp_size = HEADER_SIZE > length ? length : HEADER_SIZE;
+  if ((0 != strncmp(HEADER, buf, cmp_size)) || (buf[length - 1] != '}') ||
+      (length <= HEADER_SIZE) ||
+      (0 != secret((uint32_t)buf + HEADER_SIZE, length - 1 - HEADER_SIZE))) {
+    return -1;
+  }
+  puts("You have found the flag!");
+  return 0;
+}
